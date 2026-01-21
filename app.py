@@ -17,7 +17,7 @@ st.markdown("This tool looks at recent stock prices and suggests possible quick 
             "It uses simple rules and always includes safety stops to limit losses.")
 
 # ────────────────────────────────────────────────
-# Sidebar - explained simply
+# Sidebar
 # ────────────────────────────────────────────────
 with st.sidebar:
     st.header("Your Choices")
@@ -30,7 +30,7 @@ with st.sidebar:
     timeframe = st.selectbox(
         "How far apart should the prices be?",
         options=["1 minute", "1 hour", "1 day"],
-        index=2  # default to 1 day
+        index=2
     )
     
     capital = st.number_input(
@@ -50,7 +50,7 @@ with st.sidebar:
     ) / 100
 
 # ────────────────────────────────────────────────
-# Load API key
+# API key
 # ────────────────────────────────────────────────
 POLYGON_KEY = os.environ.get("POLYGON_API_KEY")
 if not POLYGON_KEY:
@@ -58,27 +58,26 @@ if not POLYGON_KEY:
     st.stop()
 
 # ────────────────────────────────────────────────
-# Button to get latest prices
+# Get prices
 # ────────────────────────────────────────────────
 if st.button("Get Latest Prices"):
     with st.spinner("Downloading prices..."):
         try:
             client = RESTClient(api_key=POLYGON_KEY)
-            # Use more days for better pattern detection
             from_date = (datetime.now() - pd.Timedelta(days=90)).strftime("%Y-%m-%d")
             to_date = datetime.now().strftime("%Y-%m-%d")
 
             aggs = client.get_aggs(
                 ticker=symbol,
                 multiplier=1,
-                timespan=timeframe.replace(" ", ""),  # remove space for API
+                timespan=timeframe.replace(" ", ""),
                 from_=from_date,
                 to=to_date,
                 limit=500
             )
 
             if not aggs:
-                st.warning("No prices found. Try a different stock or switch to '1 day' view.")
+                st.warning("No prices returned. Try '1 day' or a different stock.")
             else:
                 df = pd.DataFrame([{
                     "Date/Time": pd.to_datetime(bar.timestamp, unit="ms"),
@@ -89,56 +88,63 @@ if st.button("Get Latest Prices"):
                     "Volume": bar.volume
                 } for bar in aggs]).set_index("Date/Time")
 
+                # Debug: show columns
+                st.info(f"Columns after fetch: {list(df.columns)}")
+
+                # Standardize to lowercase for calculations
+                df.columns = [col.lower() for col in df.columns]
+
                 st.session_state["data"] = df
                 st.success(f"Got {len(df)} price updates for {symbol}")
                 st.dataframe(df.tail(10).style.format({
-                    "Open": "${:,.2f}",
-                    "High": "${:,.2f}",
-                    "Low": "${:,.2f}",
-                    "Close": "${:,.2f}",
-                    "Volume": "{:,.0f}"
+                    "open": "${:,.2f}",
+                    "high": "${:,.2f}",
+                    "low": "${:,.2f}",
+                    "close": "${:,.2f}",
+                    "volume": "{:,.0f}"
                 }))
 
         except Exception as e:
             st.error(f"Couldn't get prices: {str(e)}")
-            st.info("Try again, or use '1 day' view if markets are closed.")
+            st.info("Try again or use '1 day' if markets are closed.")
 
 # ────────────────────────────────────────────────
-# Calculate price patterns (indicators) - using capitalized columns
+# Price patterns - using lowercase columns
 # ────────────────────────────────────────────────
 def calculate_price_patterns(df):
     if df is None or df.empty:
+        st.warning("No data available to analyze.")
         return None
+
+    # Debug
+    st.info(f"Columns in calculate_price_patterns: {list(df.columns)}")
 
     df = df.copy()
 
-    df['Short Average Price (20)'] = df['Close'].rolling(window=20).mean()
-    df['Longer Average Price (50)'] = df['Close'].ewm(span=50, adjust=False).mean()
+    df['Short Average Price (20)'] = df['close'].rolling(window=20).mean()
+    df['Longer Average Price (50)'] = df['close'].ewm(span=50, adjust=False).mean()
 
-    # Overbought/Oversold Score (RSI)
-    delta = df['Close'].diff()
+    delta = df['close'].diff()
     gain = delta.where(delta > 0, 0).rolling(window=14).mean()
     loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
     rs = gain / loss
     df['Overbought/Oversold Score (0-100)'] = 100 - (100 / (1 + rs))
 
-    # Momentum (MACD simplified)
-    ema12 = df['Close'].ewm(span=12, adjust=False).mean()
-    ema26 = df['Close'].ewm(span=26, adjust=False).mean()
+    ema12 = df['close'].ewm(span=12, adjust=False).mean()
+    ema26 = df['close'].ewm(span=26, adjust=False).mean()
     df['Momentum Line'] = ema12 - ema26
     df['Momentum Signal Line'] = df['Momentum Line'].ewm(span=9, adjust=False).mean()
 
-    # Typical Daily Price Swing (ATR)
-    tr1 = df['High'] - df['Low']
-    tr2 = abs(df['High'] - df['Close'].shift())
-    tr3 = abs(df['Low'] - df['Close'].shift())
+    tr1 = df['high'] - df['low']
+    tr2 = abs(df['high'] - df['close'].shift())
+    tr3 = abs(df['low'] - df['close'].shift())
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     df['Typical Daily Price Swing'] = tr.rolling(window=14).mean()
 
     return df.dropna()
 
 # ────────────────────────────────────────────────
-# Find possible trades - using capitalized columns
+# Find trades - using lowercase
 # ────────────────────────────────────────────────
 def find_possible_trades(df, capital, risk_pct):
     if df is None or df.empty:
@@ -150,10 +156,9 @@ def find_possible_trades(df, capital, risk_pct):
 
     trades = []
     for i in range(1, len(df)):
-        price = df['Close'].iloc[i]
+        price = df['close'].iloc[i]
         swing = df['Typical Daily Price Swing'].iloc[i]
 
-        # BUY suggestion
         if (df['Short Average Price (20)'].iloc[i] > df['Longer Average Price (50)'].iloc[i] and
             df['Short Average Price (20)'].iloc[i-1] <= df['Longer Average Price (50)'].iloc[i-1] and
             df['Overbought/Oversold Score (0-100)'].iloc[i] < 70):
@@ -161,7 +166,6 @@ def find_possible_trades(df, capital, risk_pct):
             safety_stop = price - swing * 1.5
             risk_amount = price - safety_stop
             target_price = price + risk_amount * 2
-
             shares = max(1, int((capital * risk_pct) / risk_amount))
 
             trades.append({
@@ -173,7 +177,6 @@ def find_possible_trades(df, capital, risk_pct):
                 "Number of Shares": shares
             })
 
-        # SELL suggestion
         elif ((df['Short Average Price (20)'].iloc[i] < df['Longer Average Price (50)'].iloc[i] and
                df['Short Average Price (20)'].iloc[i-1] >= df['Longer Average Price (50)'].iloc[i-1]) or
               df['Overbought/Oversold Score (0-100)'].iloc[i] > 70):
@@ -181,7 +184,6 @@ def find_possible_trades(df, capital, risk_pct):
             safety_stop = price + swing * 1.5
             risk_amount = safety_stop - price
             target_price = price - risk_amount * 2
-
             shares = max(1, int((capital * risk_pct) / risk_amount))
 
             trades.append({
@@ -197,7 +199,7 @@ def find_possible_trades(df, capital, risk_pct):
     return df, trades_df
 
 # ────────────────────────────────────────────────
-# Button to find trades
+# Find trades button
 # ────────────────────────────────────────────────
 if "data" in st.session_state and st.button("Find Possible Trades"):
     with st.spinner("Looking for good opportunities..."):
@@ -207,7 +209,7 @@ if "data" in st.session_state and st.button("Find Possible Trades"):
         if pattern_df is not None:
             st.subheader("Recent Price Patterns & Strength (Last 10 Prices)")
             st.dataframe(pattern_df.tail(10).style.format({
-                "Close": "${:,.2f}",
+                "close": "${:,.2f}",
                 "Short Average Price (20)": "${:,.2f}",
                 "Longer Average Price (50)": "${:,.2f}",
                 "Overbought/Oversold Score (0-100)": "{:,.1f}",
@@ -226,7 +228,7 @@ if "data" in st.session_state and st.button("Find Possible Trades"):
             }))
             st.info("These are suggestions only. Always double-check and never risk more than you can afford to lose.")
         else:
-            st.info("No clear opportunities right now with this stock and settings. Try a different stock or timeframe.")
+            st.info("No clear opportunities right now. Try a different stock or timeframe.")
 
 st.markdown("---")
 st.caption("This is a learning tool — not financial advice. Test everything in paper trading mode first.")
