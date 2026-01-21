@@ -104,7 +104,7 @@ if st.button("Get Latest Prices"):
             st.info("Try again, or use '1 day' view if markets are closed.")
 
 # ────────────────────────────────────────────────
-# Calculate price patterns (indicators)
+# Calculate price patterns (indicators) - using capitalized columns
 # ────────────────────────────────────────────────
 def calculate_price_patterns(df):
     if df is None or df.empty:
@@ -138,7 +138,7 @@ def calculate_price_patterns(df):
     return df.dropna()
 
 # ────────────────────────────────────────────────
-# Find possible trades
+# Find possible trades - using capitalized columns
 # ────────────────────────────────────────────────
 def find_possible_trades(df, capital, risk_pct):
     if df is None or df.empty:
