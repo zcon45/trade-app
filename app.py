@@ -6,195 +6,227 @@ from polygon import RESTClient
 from datetime import datetime
 
 st.set_page_config(
-    page_title="Trade App – Day Trader Prototype",
+    page_title="Simple Day Trading Helper",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("Day Trading Prototype – Indicators & Signals")
+st.title("Simple Day Trading Helper")
+
+st.markdown("This tool looks at recent stock prices and suggests possible quick trades. "
+            "It uses simple rules and always includes safety stops to limit losses.")
 
 # ────────────────────────────────────────────────
-# Sidebar
+# Sidebar - explained simply
 # ────────────────────────────────────────────────
 with st.sidebar:
-    st.header("Settings")
-    symbol = st.text_input("Stock Symbol", value="AAPL")
-    timeframe = st.selectbox("Timeframe", ["minute", "hour", "day"], index=2)  # default to day
-    capital = st.number_input("Account Capital ($)", value=10000.0, step=1000.0)
-    risk_percent = st.slider("Risk per Trade (%)", 0.5, 5.0, 1.0) / 100
+    st.header("Your Choices")
+    
+    symbol = st.text_input(
+        "Which stock or crypto? (e.g. AAPL, TSLA, BTCUSD)",
+        value="AAPL"
+    )
+    
+    timeframe = st.selectbox(
+        "How far apart should the prices be?",
+        options=["1 minute", "1 hour", "1 day"],
+        index=2  # default to 1 day
+    )
+    
+    capital = st.number_input(
+        "How much money do you have to trade with? ($)",
+        value=10000.0,
+        step=1000.0,
+        min_value=1000.0
+    )
+    
+    risk_percent = st.slider(
+        "How much of your money are you willing to risk on ONE trade? (%)",
+        min_value=0.5,
+        max_value=5.0,
+        value=1.0,
+        step=0.5,
+        help="Example: 1% means if you lose the full amount on this trade, you only lose 1% of your total money."
+    ) / 100
 
 # ────────────────────────────────────────────────
 # Load API key
 # ────────────────────────────────────────────────
 POLYGON_KEY = os.environ.get("POLYGON_API_KEY")
 if not POLYGON_KEY:
-    st.error("POLYGON_API_KEY not found in secrets.")
+    st.error("Missing connection key. Add POLYGON_API_KEY in Manage app → Secrets.")
     st.stop()
 
-st.success("API key loaded ✓")
-
 # ────────────────────────────────────────────────
-# Fetch Data Button
+# Button to get latest prices
 # ────────────────────────────────────────────────
-if st.button("Fetch Recent Data from Massive/Polygon"):
-    with st.spinner("Fetching..."):
+if st.button("Get Latest Prices"):
+    with st.spinner("Downloading prices..."):
         try:
             client = RESTClient(api_key=POLYGON_KEY)
-            from_date = (datetime.now() - pd.Timedelta(days=60)).strftime("%Y-%m-%d")  # more history for indicators
+            # Use more days for better pattern detection
+            from_date = (datetime.now() - pd.Timedelta(days=90)).strftime("%Y-%m-%d")
             to_date = datetime.now().strftime("%Y-%m-%d")
 
             aggs = client.get_aggs(
                 ticker=symbol,
                 multiplier=1,
-                timespan=timeframe,
+                timespan=timeframe.replace(" ", ""),  # remove space for API
                 from_=from_date,
                 to=to_date,
-                limit=500  # enough for indicators
+                limit=500
             )
 
             if not aggs:
-                st.warning("No data returned. Try 'day' timeframe or different symbol.")
+                st.warning("No prices found. Try a different stock or switch to '1 day' view.")
             else:
                 df = pd.DataFrame([{
-                    "timestamp": pd.to_datetime(bar.timestamp, unit="ms"),
-                    "open": bar.open,
-                    "high": bar.high,
-                    "low": bar.low,
-                    "close": bar.close,
-                    "volume": bar.volume
-                } for bar in aggs]).set_index("timestamp")
+                    "Date/Time": pd.to_datetime(bar.timestamp, unit="ms"),
+                    "Open": bar.open,
+                    "High": bar.high,
+                    "Low": bar.low,
+                    "Close": bar.close,
+                    "Volume": bar.volume
+                } for bar in aggs]).set_index("Date/Time")
 
-                st.session_state["data"] = df  # store for later use
-                st.success(f"Fetched {len(df)} bars for {symbol} ({timeframe})")
+                st.session_state["data"] = df
+                st.success(f"Got {len(df)} price updates for {symbol}")
                 st.dataframe(df.tail(10).style.format({
-                    "open": "${:,.2f}", "high": "${:,.2f}", "low": "${:,.2f}", "close": "${:,.2f}",
-                    "volume": "{:,.0f}"
+                    "Open": "${:,.2f}",
+                    "High": "${:,.2f}",
+                    "Low": "${:,.2f}",
+                    "Close": "${:,.2f}",
+                    "Volume": "{:,.0f}"
                 }))
 
         except Exception as e:
-            st.error(f"Fetch error: {str(e)}")
+            st.error(f"Couldn't get prices: {str(e)}")
+            st.info("Try again, or use '1 day' view if markets are closed.")
 
 # ────────────────────────────────────────────────
-# Calculate Indicators (manual, no extra deps)
+# Calculate price patterns (indicators)
 # ────────────────────────────────────────────────
-def calculate_indicators(df):
+def calculate_price_patterns(df):
     if df is None or df.empty:
         return None
 
     df = df.copy()
 
-    # SMA 20
-    df['sma_20'] = df['close'].rolling(window=20).mean()
+    df['Short Average Price (20)'] = df['Close'].rolling(window=20).mean()
+    df['Longer Average Price (50)'] = df['Close'].ewm(span=50, adjust=False).mean()
 
-    # EMA 50
-    df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
-
-    # RSI 14
-    delta = df['close'].diff()
+    # Overbought/Oversold Score (RSI)
+    delta = df['Close'].diff()
     gain = delta.where(delta > 0, 0).rolling(window=14).mean()
     loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
     rs = gain / loss
-    df['rsi_14'] = 100 - (100 / (1 + rs))
+    df['Overbought/Oversold Score (0-100)'] = 100 - (100 / (1 + rs))
 
-    # MACD (12,26,9)
-    ema12 = df['close'].ewm(span=12, adjust=False).mean()
-    ema26 = df['close'].ewm(span=26, adjust=False).mean()
-    df['macd'] = ema12 - ema26
-    df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
-    df['macd_hist'] = df['macd'] - df['macd_signal']
+    # Momentum (MACD simplified)
+    ema12 = df['Close'].ewm(span=12, adjust=False).mean()
+    ema26 = df['Close'].ewm(span=26, adjust=False).mean()
+    df['Momentum Line'] = ema12 - ema26
+    df['Momentum Signal Line'] = df['Momentum Line'].ewm(span=9, adjust=False).mean()
 
-    # ATR 14
-    tr1 = df['high'] - df['low']
-    tr2 = abs(df['high'] - df['close'].shift())
-    tr3 = abs(df['low'] - df['close'].shift())
+    # Typical Daily Price Swing (ATR)
+    tr1 = df['High'] - df['Low']
+    tr2 = abs(df['High'] - df['Close'].shift())
+    tr3 = abs(df['Low'] - df['Close'].shift())
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    df['atr_14'] = tr.rolling(window=14).mean()
+    df['Typical Daily Price Swing'] = tr.rolling(window=14).mean()
 
     return df.dropna()
 
 # ────────────────────────────────────────────────
-# Generate Signals with Risk Management
+# Find possible trades
 # ────────────────────────────────────────────────
-def generate_signals(df, capital, risk_pct):
+def find_possible_trades(df, capital, risk_pct):
     if df is None or df.empty:
         return None, None
 
-    df = calculate_indicators(df)
+    df = calculate_price_patterns(df)
     if df is None or df.empty:
         return None, None
 
-    signals = []
+    trades = []
     for i in range(1, len(df)):
-        price = df['close'].iloc[i]
-        atr = df['atr_14'].iloc[i]
+        price = df['Close'].iloc[i]
+        swing = df['Typical Daily Price Swing'].iloc[i]
 
-        # Buy: SMA20 crosses above EMA50, RSI < 70
-        if (df['sma_20'].iloc[i] > df['ema_50'].iloc[i] and
-            df['sma_20'].iloc[i-1] <= df['ema_50'].iloc[i-1] and
-            df['rsi_14'].iloc[i] < 70):
+        # BUY suggestion
+        if (df['Short Average Price (20)'].iloc[i] > df['Longer Average Price (50)'].iloc[i] and
+            df['Short Average Price (20)'].iloc[i-1] <= df['Longer Average Price (50)'].iloc[i-1] and
+            df['Overbought/Oversold Score (0-100)'].iloc[i] < 70):
 
-            stop_loss = price - atr * 1.5
-            risk_dist = price - stop_loss
-            take_profit = price + risk_dist * 2.0  # 2:1 reward:risk
+            safety_stop = price - swing * 1.5
+            risk_amount = price - safety_stop
+            target_price = price + risk_amount * 2
 
-            qty = max(1, int((capital * risk_pct) / risk_dist))
+            shares = max(1, int((capital * risk_pct) / risk_amount))
 
-            signals.append({
-                "timestamp": df.index[i],
-                "action": "BUY",
-                "price": price,
-                "stop_loss": stop_loss,
-                "take_profit": take_profit,
-                "quantity": qty
+            trades.append({
+                "Date/Time": df.index[i],
+                "Buy or Sell": "BUY",
+                "Entry Price": price,
+                "Safety Stop Price": safety_stop,
+                "Target Sell Price": target_price,
+                "Number of Shares": shares
             })
 
-        # Sell: SMA20 crosses below EMA50 or RSI > 70
-        elif ((df['sma_20'].iloc[i] < df['ema_50'].iloc[i] and
-               df['sma_20'].iloc[i-1] >= df['ema_50'].iloc[i-1]) or
-              df['rsi_14'].iloc[i] > 70):
+        # SELL suggestion
+        elif ((df['Short Average Price (20)'].iloc[i] < df['Longer Average Price (50)'].iloc[i] and
+               df['Short Average Price (20)'].iloc[i-1] >= df['Longer Average Price (50)'].iloc[i-1]) or
+              df['Overbought/Oversold Score (0-100)'].iloc[i] > 70):
 
-            stop_loss = price + atr * 1.5
-            risk_dist = stop_loss - price
-            take_profit = price - risk_dist * 2.0
+            safety_stop = price + swing * 1.5
+            risk_amount = safety_stop - price
+            target_price = price - risk_amount * 2
 
-            qty = max(1, int((capital * risk_pct) / risk_dist))
+            shares = max(1, int((capital * risk_pct) / risk_amount))
 
-            signals.append({
-                "timestamp": df.index[i],
-                "action": "SELL",
-                "price": price,
-                "stop_loss": stop_loss,
-                "take_profit": take_profit,
-                "quantity": qty
+            trades.append({
+                "Date/Time": df.index[i],
+                "Buy or Sell": "SELL",
+                "Entry Price": price,
+                "Safety Stop Price": safety_stop,
+                "Target Sell Price": target_price,
+                "Number of Shares": shares
             })
 
-    signals_df = pd.DataFrame(signals) if signals else pd.DataFrame()
-    return df, signals_df
+    trades_df = pd.DataFrame(trades) if trades else pd.DataFrame()
+    return df, trades_df
 
 # ────────────────────────────────────────────────
-# Run Scan Button
+# Button to find trades
 # ────────────────────────────────────────────────
-if "data" in st.session_state and st.button("Run Scan & Generate Signals"):
-    with st.spinner("Analyzing..."):
+if "data" in st.session_state and st.button("Find Possible Trades"):
+    with st.spinner("Looking for good opportunities..."):
         data = st.session_state["data"]
-        ind_df, sig_df = generate_signals(data, capital, risk_percent)
+        pattern_df, trades_df = find_possible_trades(data, capital, risk_percent)
 
-        if ind_df is not None:
-            st.subheader("Indicators (Last 10 Rows)")
-            st.dataframe(ind_df.tail(10).style.format({
-                "close": "${:,.2f}", "sma_20": "${:,.2f}", "ema_50": "${:,.2f}",
-                "rsi_14": "{:,.2f}", "macd": "{:,.4f}", "macd_signal": "{:,.4f}",
-                "atr_14": "{:,.2f}"
+        if pattern_df is not None:
+            st.subheader("Recent Price Patterns & Strength (Last 10 Prices)")
+            st.dataframe(pattern_df.tail(10).style.format({
+                "Close": "${:,.2f}",
+                "Short Average Price (20)": "${:,.2f}",
+                "Longer Average Price (50)": "${:,.2f}",
+                "Overbought/Oversold Score (0-100)": "{:,.1f}",
+                "Momentum Line": "{:,.4f}",
+                "Momentum Signal Line": "{:,.4f}",
+                "Typical Daily Price Swing": "{:,.2f}"
             }))
 
-        if not sig_df.empty:
-            st.subheader("Generated Signals")
-            st.dataframe(sig_df.style.format({
-                "price": "${:,.2f}", "stop_loss": "${:,.2f}", "take_profit": "${:,.2f}",
-                "quantity": "{:,}"
+        if not trades_df.empty:
+            st.subheader("Possible Trades Found")
+            st.dataframe(trades_df.style.format({
+                "Entry Price": "${:,.2f}",
+                "Safety Stop Price": "${:,.2f}",
+                "Target Sell Price": "${:,.2f}",
+                "Number of Shares": "{:,}"
             }))
+            st.info("These are suggestions only. Always double-check and never risk more than you can afford to lose.")
         else:
-            st.info("No clear signals generated with current data/strategy.")
+            st.info("No clear opportunities right now with this stock and settings. Try a different stock or timeframe.")
 
 st.markdown("---")
-st.caption("Next up (after you test this): Alpaca trading execution + portfolio monitor")
+st.caption("This is a learning tool — not financial advice. Test everything in paper trading mode first.")
