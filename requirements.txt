@@ -1,5 +1,5 @@
 streamlit
 pandas
 numpy
-polygon
+polygon-api-client
 alpaca-trade-api
