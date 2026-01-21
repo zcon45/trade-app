@@ -27,11 +27,19 @@ with st.sidebar:
         value="AAPL"
     )
     
-    timeframe = st.selectbox(
+    timeframe_label = st.selectbox(
         "How far apart should the prices be?",
         options=["1 minute", "1 hour", "1 day"],
-        index=2
+        index=2  # default to 1 day
     )
+    
+    # Map user-friendly label to API timespan value
+    timeframe_map = {
+        "1 minute": "minute",
+        "1 hour": "hour",
+        "1 day": "day"
+    }
+    api_timespan = timeframe_map[timeframe_label]
     
     capital = st.number_input(
         "How much money do you have to trade with? ($)",
@@ -70,14 +78,14 @@ if st.button("Get Latest Prices"):
             aggs = client.get_aggs(
                 ticker=symbol,
                 multiplier=1,
-                timespan=timeframe.replace(" ", ""),
+                timespan=api_timespan,  # Now correct: 'minute', 'hour', 'day'
                 from_=from_date,
                 to=to_date,
                 limit=500
             )
 
             if not aggs:
-                st.warning("No prices returned. Try '1 day' or a different stock.")
+                st.warning("No prices found. Try a different stock or switch to '1 day'.")
             else:
                 df = pd.DataFrame([{
                     "Date/Time": pd.to_datetime(bar.timestamp, unit="ms"),
@@ -88,14 +96,11 @@ if st.button("Get Latest Prices"):
                     "Volume": bar.volume
                 } for bar in aggs]).set_index("Date/Time")
 
-                # Debug: show columns
-                st.info(f"Columns after fetch: {list(df.columns)}")
-
-                # Standardize to lowercase for calculations
+                # Standardize columns to lowercase for calculations
                 df.columns = [col.lower() for col in df.columns]
 
                 st.session_state["data"] = df
-                st.success(f"Got {len(df)} price updates for {symbol}")
+                st.success(f"Got {len(df)} price updates for {symbol} ({timeframe_label})")
                 st.dataframe(df.tail(10).style.format({
                     "open": "${:,.2f}",
                     "high": "${:,.2f}",
@@ -106,18 +111,15 @@ if st.button("Get Latest Prices"):
 
         except Exception as e:
             st.error(f"Couldn't get prices: {str(e)}")
-            st.info("Try again or use '1 day' if markets are closed.")
+            st.info("Common fixes: Use '1 day' if markets are closed, check symbol spelling, or verify your API key limits.")
 
 # ────────────────────────────────────────────────
 # Price patterns - using lowercase columns
 # ────────────────────────────────────────────────
 def calculate_price_patterns(df):
     if df is None or df.empty:
-        st.warning("No data available to analyze.")
+        st.warning("No data available to analyze. Click 'Get Latest Prices' first.")
         return None
-
-    # Debug
-    st.info(f"Columns in calculate_price_patterns: {list(df.columns)}")
 
     df = df.copy()
 
@@ -144,7 +146,7 @@ def calculate_price_patterns(df):
     return df.dropna()
 
 # ────────────────────────────────────────────────
-# Find trades - using lowercase
+# Find possible trades
 # ────────────────────────────────────────────────
 def find_possible_trades(df, capital, risk_pct):
     if df is None or df.empty:
@@ -159,6 +161,7 @@ def find_possible_trades(df, capital, risk_pct):
         price = df['close'].iloc[i]
         swing = df['Typical Daily Price Swing'].iloc[i]
 
+        # BUY
         if (df['Short Average Price (20)'].iloc[i] > df['Longer Average Price (50)'].iloc[i] and
             df['Short Average Price (20)'].iloc[i-1] <= df['Longer Average Price (50)'].iloc[i-1] and
             df['Overbought/Oversold Score (0-100)'].iloc[i] < 70):
@@ -177,6 +180,7 @@ def find_possible_trades(df, capital, risk_pct):
                 "Number of Shares": shares
             })
 
+        # SELL
         elif ((df['Short Average Price (20)'].iloc[i] < df['Longer Average Price (50)'].iloc[i] and
                df['Short Average Price (20)'].iloc[i-1] >= df['Longer Average Price (50)'].iloc[i-1]) or
               df['Overbought/Oversold Score (0-100)'].iloc[i] > 70):
